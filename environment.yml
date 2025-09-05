@@ -1,0 +1,29 @@
+name: specalign
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - numpy
+  - pyyaml
+  - cmake
+  - pip:
+      - torch
+      - torchvision
+      - transformers>=4.43
+      - datasets>=2.20
+      - accelerate>=0.33
+      - bitsandbytes>=0.43
+      - sentencepiece>=0.2   # T5/T5Gemma tokenizer
+      - protobuf<5           # avoid occasional HF/protobuf pinning issues
+      - evaluate>=0.4
+      - rouge-score>=0.1.2
+      - tensorboard>=2.16
+      - safetensors>=0.4
+      - rich>=13
+      - typer[all]>=0.12     # for nice CLIs later
+      - omegaconf>=2.3       # config handling
+      - psutil
+      - tqdm

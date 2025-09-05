@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "specalign"
+version = "0.0.1"
+description = "Align Target and Draft LLMs for fast and efficient speculative decoding"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "Jordan MacIntyre" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence"
+]
+
+# Keep runtime deps light here; heavy ones are in environment.yml.
+# This allows overrides via conda/pip as needed without conflicts.
+dependencies = [
+  "omegaconf>=2.3",
+  "tqdm",
+  "rich>=13",
+]
+
+[project.optional-dependencies]
+dev = [
+  "black>=24.1",
+  "ruff>=0.4",
+  "pytest>=8",
+  "mypy>=1.8",
+]
+train = [
+  "transformers>=4.43",
+  "datasets>=2.20",
+  "accelerate>=0.33",
+  "bitsandbytes>=0.43",
+  "sentencepiece>=0.2",
+  "tensorboard>=2.16",
+  "evaluate>=0.4",
+  "rouge-score>=0.1.2",
+  "safetensors>=0.4",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/specalign"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.black]
+line-length = 88
