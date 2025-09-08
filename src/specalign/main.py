@@ -18,17 +18,36 @@ GRAD_ACCUM_STEPS = 16
 WARMUP_STEPS = 100
 MAX_STEPS = 2_000
 K_MAX = 4
+KD_TEMP = 1
+
+
+def kd_loss_from_logits(logits_s, logits_t, targets, mask, T=1.0):
+    logp_s = torch.log_softmax(logits_s / T, dim=-1)
+    p_t = torch.softmax(logits_t / T, dim=-1)
+    kd_token = torch.nn.functional.kl_div(logp_s, p_t, reduction="none") * (T * T)
+    kd_seq = kd_token.sum(dim=-1)
+    return (kd_seq[mask]).mean()
+
+
+def build_masks_and_targets(sequence, prompt_lengths):
+    B, L = sequence.shape
+    targets = sequence[:, 1:]
+    drop_idx = torch.arange(L - 1, device=sequence.device).view(1, -1).expand(B, -1)
+    mask = drop_idx >= (prompt_lengths.view(-1, 1) - 1)
+    return targets, mask
 
 
 def tokenize_function(examples, tokenizer, max_length):
-    end_marker = ". Summary:"
-    end_ids = tokenizer(end_marker, add_special_tokens=False)["input_ids"]
-
     prompt = [
         {"role": "system", "content": "You are a concise, factual assistant."},
-        {"role": "user", "content": "Summarize the article in 1 sentence."},
-        {"role": "user", "content": examples["article"]},
+        {
+            "role": "user",
+            "content": f"Summarize this in 1 sentence {examples['article']}",
+        },
     ]
+
+    end_marker = "\n\nSummary:"
+    end_ids = tokenizer(end_marker, add_special_tokens=False)["input_ids"]
 
     tokenized_prompt = tokenizer.apply_chat_template(
         prompt,
@@ -41,7 +60,7 @@ def tokenize_function(examples, tokenizer, max_length):
         return_tensors=None,
     )
 
-    return {"input_ids": [tokenized_prompt["input_ids"] + end_ids]}
+    return {"input_ids": tokenized_prompt["input_ids"] + end_ids}
 
 
 def main():
@@ -93,7 +112,8 @@ def main():
 
     # Configures dataset to return torch tensors when indexing
     tokenized_dataset = tokenized_dataset.with_format(
-        type="torch", columns=["input_ids"]
+        type="torch",
+        columns=["input_ids", "attention_mask"],
     )
 
     dl = DataLoader(tokenized_dataset, batch_size=10, shuffle=True, drop_last=True)
@@ -101,7 +121,7 @@ def main():
     # ================
     # Optimizer
     # ================
-    optimizer = torch.optim.AdawmW(
+    optimizer = torch.optim.AdamW(
         student.parameters(),
         lr=LR,
         betas=(0.9, 0.95),
@@ -124,22 +144,39 @@ def main():
     student.train()
     time_start = time.time()
 
+    # ================
+    # Training Loop
+    # ================
     while global_step < MAX_STEPS:
         for batch in dl:
-
-            input_ids = (
-                tokenized_dataset[0]["input_ids"].unsqueeze(0).to(student.device)
-            )
-
             with torch.no_grad():
-                outputs = student.generate(
-                    input_ids=input_ids,
-                    max_new_tokens=K_MAX,
-                    do_sample=False,
-                    use_cache=True,
-                    return_dict_in_generate=False,
-                    output_scores=False,
+                # Generate sequence(s)
+                sequences = onpolicy_generation(
+                    model=student,
+                    input_ids=batch["input_ids"].to(device),
+                    k=K_MAX,
                 )
+
+            # Evaluate (Teacher & Student), Drop final logit (no target for last token)
+            logits_s = student(input_ids=sequences).logits[:, :-1, :]
+            with torch.no_grad():
+                logits_t = teacher(input_ids=sequences).logits[:, :-1, :]
+
+            # Generate target and masks
+            prompt_lengths = batch["attention_mask"].sum(dim=1).to(device)
+            targets, mask = build_masks_and_targets(sequences, prompt_lengths)
+
+            # Calculate KL divergence loss
+            kd = kd_loss_from_logits(logits_s, logits_t, targets, mask, T=KD_TEMP)
+            loss = kd / GRAD_ACCUM_STEPS
+
+            loss.backward()
+
+            if (global_step + 1) % GRAD_ACCUM_STEPS == 0:
+                torch.nn.utils.clip_grad_norm_(student.parameters(), 1.0)
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
 
 
 if __name__ == "__main__":
