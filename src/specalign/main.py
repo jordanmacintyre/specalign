@@ -26,7 +26,13 @@ def kd_loss_from_logits(logits_s, logits_t, targets, mask, T=1.0):
     p_t = torch.softmax(logits_t / T, dim=-1)
     kd_token = torch.nn.functional.kl_div(logp_s, p_t, reduction="none") * (T * T)
     kd_seq = kd_token.sum(dim=-1)
-    return (kd_seq[mask]).mean()
+    loss = (kd_seq[mask]).mean()
+
+    # Calculate agreement rate
+    agree = (logits_s.argmax(-1) == logits_t.argmax(-1)) * mask
+    agree_rate = agree.float().sum() / mask.float().sum().clamp_min(1)
+
+    return loss, agree_rate.item()
 
 
 def build_masks_and_targets(sequence, prompt_lengths):
@@ -167,16 +173,38 @@ def main():
             targets, mask = build_masks_and_targets(sequences, prompt_lengths)
 
             # Calculate KL divergence loss
-            kd = kd_loss_from_logits(logits_s, logits_t, targets, mask, T=KD_TEMP)
+            kd, agree = kd_loss_from_logits(
+                logits_s, logits_t, targets, mask, T=KD_TEMP
+            )
             loss = kd / GRAD_ACCUM_STEPS
 
             loss.backward()
+
+            # Track metrics
+            running["loss"] += kd.item()
+            running["agree"] += agree
+            running["count"] += 1
 
             if (global_step + 1) % GRAD_ACCUM_STEPS == 0:
                 torch.nn.utils.clip_grad_norm_(student.parameters(), 1.0)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
+
+            # Log progress
+            if (global_step + 1) % 50 == 0:
+                avg_loss = running["loss"] / running["count"]
+                avg_agree = running["agree"] / running["count"]
+                dt = time.time() - time_start
+                print(
+                    f"[step {global_step+1}] kd={avg_loss:.3f} agree={avg_agree:.3f} k={K_MAX} dt={dt:.1f}s"
+                )
+                running = {"loss": 0.0, "agree": 0.0, "count": 0}
+                time_start = time.time()
+
+            global_step += 1
+            if global_step >= MAX_STEPS:
+                break
 
 
 if __name__ == "__main__":
